@@ -1,23 +1,30 @@
 import struct
 from io import BufferedWriter
+from io import BufferedReader
 
 class TgaFile:
 
     class TgaColor:
-        def __init__(self, r:int = 0, g:int = 0, b:int = 0, a:int = 0):
+        def __init__(self, b:int = 0, g:int = 0, r:int = 0, a:int = 0):
             self.r = r
             self.g = g
             self.b = b
             self.a = a
 
         def get1Byte(self):
-            return struct.pack("<B", self.r)
+            return struct.pack("<B", self.b)
         
         def get3Bytes(self):
             return struct.pack("<BBB", self.b, self.g, self.r)
 
         def get4Bytes(self):
             return struct.pack("<BBBB", self.b, self.g, self.r, self.a)
+        
+        def set(self, b:int = 0, g:int = 0, r:int = 0, a:int = 0):
+            self.r = r
+            self.g = g
+            self.b = b
+            self.a = a
         
         def __eq__(self, value: "TgaFile.TgaColor") -> bool:
             return self.r == value.r and self.g == value.g and self.b == value.b and self.a == value.a
@@ -38,6 +45,83 @@ class TgaFile:
         elif self.bpp == 4:
             for i in range (self.width*self.height):
                 fileObj.write(self.data[i].get4Bytes())
+
+    @staticmethod
+    def LoadTga(filename:str):
+        tgaFile = None
+        with open(filename, "rb") as f:
+            header = struct.unpack("<BBBHHBHHHHBB", f.read(18))
+            if header[0] != 0 or header[1] != 0 or header[3] != 0 or header[4] != 0 or header[5] != 0 or header[6] != 0 or header[7] != 0:
+                return None
+            datatype = header[2]
+            width = header[8]
+            height = header[9]
+            bytesPerPixel = header[10] >> 3
+            vflip = not ((header[10] & 0x20) == 0x20)
+            hflip = ((header[10] & 0x10) == 0x10)
+            rle = False
+
+            if width <= 0 or height <= 0 or (bytesPerPixel != 4 and bytesPerPixel != 3 and bytesPerPixel != 1):
+                return None
+            
+            tgaFile = TgaFile(width, height, bytesPerPixel)
+
+            if (bytesPerPixel == 1 and datatype == 11) or (bytesPerPixel != 1 and datatype == 10):
+                rle = True
+            elif (bytesPerPixel == 1 and datatype != 3) or (bytesPerPixel != 1 and datatype != 2):
+                return None
+            if rle:
+                tgaFile.LoadRLEData(f)
+            else:
+                tgaFile.LoadRawData(f)
+            if vflip:
+                tgaFile.FlipVertically()
+            if hflip:
+                tgaFile.FlipHorizontally()
+        return tgaFile
+            
+    def LoadRLEData(self, fileObj:BufferedReader):
+            pixelCount = self.width * self.height
+            currentPixel = 0
+            currentByte  = 0
+            while currentPixel < pixelCount:
+                chunkHeader = struct.unpack("<B", fileObj.read(1))[0]
+
+                if chunkHeader < 128:
+                    chunkHeader += 1
+                    if self.bpp == 1:
+                        for i in range (chunkHeader):
+                            self.data[currentPixel + i].set(*struct.unpack("<B", fileObj.read(1)))
+                    elif self.bpp == 3:
+                        for i in range (chunkHeader):
+                            self.data[currentPixel + i].set(*struct.unpack("<BBB", fileObj.read(3)))
+                    elif self.bpp == 4:
+                        for i in range (chunkHeader):
+                            self.data[currentPixel + i].set(*struct.unpack("<BBBB", fileObj.read(4)))
+                    currentPixel += chunkHeader
+                else:
+                    chunkHeader -= 127
+                    if self.bpp == 1:
+                        color = struct.unpack("<B", fileObj.read(1))
+                    elif self.bpp == 3:
+                        color = struct.unpack("<BBB", fileObj.read(3))
+                    elif self.bpp == 4:
+                        color = struct.unpack("<BBBB", fileObj.read(4))
+                    for i in range (chunkHeader):
+                        self.data[currentPixel + i].set(*color)
+                    currentPixel += chunkHeader
+
+    def LoadRawData(self, fileObj:BufferedReader):
+        if self.bpp == 1:
+            for i in range (self.width*self.height):
+                self.data[i].set(*struct.unpack("<B", fileObj.read(1)))
+        elif self.bpp == 3:
+            for i in range (self.width*self.height):
+                self.data[i].set(*struct.unpack("<BBB", fileObj.read(3)))
+        elif self.bpp == 4:
+            for i in range (self.width*self.height):
+                self.data[i].set(*struct.unpack("<BBBB", fileObj.read(4)))
+
 
     def SaveRLEData(self, fileObj:BufferedWriter):
         maxChunkLength = 128
@@ -103,13 +187,34 @@ class TgaFile:
         if 0 <= x < self.width and 0 <= y < self.height:
             self.data[x*self.width + y] = TgaFile.TgaColor(r, g, b, a)
 
-file = TgaFile(32, 32, 4)
+    def FlipHorizontally(self):
+        for row in range(self.height):
+            rowOffset = row * self.height
+            for column in range(self.width//2):
+                cell1 = rowOffset + column
+                cell2 = rowOffset + self.width - 1 - column
+                self.data[cell1], self.data[cell2] = self.data[cell2], self.data[cell1]
+
+    def FlipVertically(self):
+        for row in range(self.height//2):
+            rowOffset1 = row * self.height
+            rowOffset2 = (self.height - 1 - row) * self.height
+            for column in range(self.width):
+                cell1 = rowOffset1 + column
+                cell2 = rowOffset2 + column
+                self.data[cell1], self.data[cell2] = self.data[cell2], self.data[cell1]
+
+file = TgaFile(32, 32, 3)
 file.Put(0, 0, 255, 0, 0)
 file.Put(31, 31, 0, 255, 0)
 file.SaveTga("tmp.tga", False, True)
 
-from PIL import Image
+file2 = TgaFile.LoadTga("tmp.tga")
+file2.SaveTga("tmp2.tga", False, False)
+
+
+#from PIL import Image
 
 #image = Image.frombytes('RGB', (128,128), data, 'raw')
-image = Image.open("tmp.tga")
-print(image)
+# image = Image.open("tmp.tga")
+# print(image)
